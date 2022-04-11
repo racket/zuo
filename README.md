@@ -1,3 +1,6 @@
+This is a mirror of the Zuo sources in the `racket/src/zuo` directory of
+[the Racket repository](https://github.com/racket/racket).
+
 Zuo: A Tiny Racket for Scripting
 ================================
 
