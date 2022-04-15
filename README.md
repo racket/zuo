@@ -103,4 +103,5 @@ More Information
 ----------------
 
 Install the `zuo-doc` directory as a package in Racket to render the
-documentation there.
+documentation there, or see
+[doc.racket-lang.org](https://docs.racket-lang.org/zuo/index.html).
