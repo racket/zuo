@@ -286,7 +286,7 @@ specific choices about how to work with paths:
        on the filesystem is a symbolic link to to the relative path
        @filepath{x/y/z}---in which case the filesystem would resolve
        @filepath{a/b/../c} the same as @filepath{a/x/y/z/../c}, which
-       is @filepath{a/x/y/c} and not @filepath{a/c}.
+       is @filepath{a/z/y/c} and not @filepath{a/c}.
 
        In short, mixing directory symbolic links with Zuo's path
        functions can be different than what the filesystem would do,
@@ -318,7 +318,7 @@ specific choices about how to work with paths:
 
        The way that you start a Zuo script affects the script's
        operation in terms of absolute or relative paths. If you start
-       a Zuo script with a relative patch, such as @exec{zuo
+       a Zuo script with a relative path, such as @exec{zuo
        scripts/go.zuo}, the @racket[quote-module-path] form will
        report a relative path for the enclosing script. If you start
        it with an absolute path, such as @exec{zuo
