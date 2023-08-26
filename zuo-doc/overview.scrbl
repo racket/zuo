@@ -21,7 +21,7 @@ The name ``Zuo'' is derived from the Chinese word for ``make.''
 @section[#:tag "running"]{Building and Running Zuo}
 
 Compile @filepath{zuo.c} from the Zuo sources with a C compiler. No
-additional are files needed for compilation, other than system and
+additional files are needed for compilation, other than system and
 C-library headers. No compiler flags should be needed, although flags
 like @exec{-o zuo} or @exec{-O2} are a good idea.
 
