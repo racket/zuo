@@ -2751,17 +2751,38 @@ static zuo_t *zuo_quotient(zuo_t *n, zuo_t *m) {
   return zuo_integer(ZUO_INT_I(n) / m_i);
 }
 
+zuo_int_t mod(zuo_int_t n, zuo_int_t m) {
+  zuo_int_t r;
+  /* assumes m is non-zero */
+  /* if m is the minimum integer, -m is again negative */
+  if (m+1 == -9223372036854775807) {
+    r = n % m;
+    return (r > 0) ? r - 9223372036854775807 -1 : r;
+  }
+  if (m < 0)
+    return -mod(-n, -m);
+  r = n % m;
+  if (r < 0)
+    return r + m;
+
+  return r;
+}
+
 static zuo_t *zuo_modulo(zuo_t *n, zuo_t *m) {
   const char *who = "modulo";
-  zuo_int_t m_i;
+  zuo_int_t n_i, m_i;
   check_ints(n, m, who);
+  n_i = ZUO_UINT_I(n);
   m_i = ZUO_UINT_I(m);
   if (m_i == 0) zuo_fail1w(who, "divide by zero", m);
   if (m_i == -1) {
-    /* avoid potential overflow a the minimum integer */
+    /* avoid potential overflow at the minimum integer */
     return zuo_integer(0);
   }
-  return zuo_integer(ZUO_INT_I(n) % m_i);
+  n_i = ZUO_INT_I(n);
+  m_i = ZUO_INT_I(m);
+
+  return zuo_integer(mod(n_i, m_i));
 }
 
 static zuo_t *zuo_not(zuo_t *obj) {

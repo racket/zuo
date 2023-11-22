@@ -22,8 +22,8 @@
   (unless (equal? a b)
     (error (~a "failed: "
                (~s e)
-               "\n  result: " (~v a)
-               "\n  result: " (~v b)))))
+               "\n  result:   " (~v a)
+               "\n  expected: " (~v b)))))
 
 (define-syntax (check stx)
   (unless (list? stx) (bad-syntax stx))
