@@ -869,7 +869,7 @@ static void zuo_fasl(zuo_t *obj, zuo_fasl_stream_t *stream) {
     }
   case zuo_primitive_tag:
     {
-      zuo_int32_t primitive_id;
+      zuo_int32_t primitive_id = 0;
       if (stream->mode == zuo_fasl_out) {
         primitive_id = zuo_primitive_to_id((zuo_primitive_t *)obj);
         zuo_fasl_int32(&primitive_id, stream);
@@ -3946,6 +3946,7 @@ static zuo_t *zuo_build_path(zuo_t *paths) {
   return zuo_build_path_multi("build-path", paths, zuo_build_path2);
 }
 
+#ifndef ZUO_EMBEDDED
 static zuo_t *zuo_normalize_input_path(zuo_t *path) {
   /* Using "." is meant to work even if `path` is absolute: */
   return zuo_build_path2(zuo_string("."), path);
@@ -3957,6 +3958,7 @@ static zuo_t *zuo_path_to_complete_path(zuo_t *path) {
   else
     return zuo_build_path2(zuo_current_directory(), path);
 }
+#endif
 
 static zuo_t *zuo_library_path_to_file_path(zuo_t *path) {
   zuo_t *strobj;
@@ -4625,6 +4627,7 @@ static zuo_t *zuo_fd_poll(zuo_t *fds_i, zuo_t *timeout_i) {
     if (timeout != 0)
       Sleep(timeout < 0 ? INFINITE : timeout);
     which = len;
+    fds = NULL;
   } else {
     zuo_int_t i = 0;
     DWORD r;
@@ -4650,7 +4653,8 @@ static zuo_t *zuo_fd_poll(zuo_t *fds_i, zuo_t *timeout_i) {
   for (l = fds_i; which > 0; l = _zuo_cdr(l))
     which--;
 
-  free(fds);
+  if (fds != NULL)
+    free(fds);
 
   if (l == z.o_null)
     return z.o_false;
@@ -4992,7 +4996,7 @@ static zuo_t *zuo_eval_module(zuo_t *module_path, zuo_t *input_str) {
 /* filesystem and time                                                  */
 /*======================================================================*/
 
-#if defined(__APPLE__) && defined(__MACH__)
+#if defined(__APPLE__) && defined(__MACH__) && !defined(_POSIX_C_SOURCE)
 # define zuo_st_atim st_atimespec
 # define zuo_st_mtim st_mtimespec
 # define zuo_st_ctim st_ctimespec
@@ -5059,12 +5063,23 @@ static zuo_t *zuo_stat(zuo_t *path, zuo_t *follow_links, zuo_t *false_on_error) 
     result = zuo_hash_set(result, zuo_symbol("size"), zuo_integer(stat_buf.st_size));
     result = zuo_hash_set(result, zuo_symbol("block-size"), zuo_integer(stat_buf.st_blksize));
     result = zuo_hash_set(result, zuo_symbol("block-count"), zuo_integer(stat_buf.st_blocks));
+# if defined(_POSIX_C_SOURCE)
+    /* IEEE Std 1003.1-2017 has `st_atim`, etc., but even when `_POSIX_C_SOURCE` is set to request
+       that, it may not be available */
+    result = zuo_hash_set(result, zuo_symbol("access-time-seconds"), zuo_integer(stat_buf.st_atime));
+    result = zuo_hash_set(result, zuo_symbol("access-time-nanoseconds"), zuo_integer(0));
+    result = zuo_hash_set(result, zuo_symbol("modify-time-seconds"), zuo_integer(stat_buf.st_mtime));
+    result = zuo_hash_set(result, zuo_symbol("modify-time-nanoseconds"), zuo_integer(0));
+    result = zuo_hash_set(result, zuo_symbol("creation-time-seconds"), zuo_integer(stat_buf.st_ctime));
+    result = zuo_hash_set(result, zuo_symbol("creation-time-nanoseconds"), zuo_integer(0));
+# else
     result = zuo_hash_set(result, zuo_symbol("access-time-seconds"), zuo_integer(stat_buf.zuo_st_atim.tv_sec));
     result = zuo_hash_set(result, zuo_symbol("access-time-nanoseconds"), zuo_integer(stat_buf.zuo_st_atim.tv_nsec));
     result = zuo_hash_set(result, zuo_symbol("modify-time-seconds"), zuo_integer(stat_buf.zuo_st_mtim.tv_sec));
     result = zuo_hash_set(result, zuo_symbol("modify-time-nanoseconds"), zuo_integer(stat_buf.zuo_st_mtim.tv_nsec));
     result = zuo_hash_set(result, zuo_symbol("creation-time-seconds"), zuo_integer(stat_buf.zuo_st_ctim.tv_sec));
     result = zuo_hash_set(result, zuo_symbol("creation-time-nanoseconds"), zuo_integer(stat_buf.zuo_st_ctim.tv_nsec));
+# endif
   }
 #endif
 #ifdef ZUO_WINDOWS
@@ -6867,7 +6882,13 @@ static void zuo_sha256_update(zuo_sha2_ctx_t *context, const zuo_uint8_t *data, 
 
 /* Get the final hash value after all bytes have been added */
 static void zuo_sha256_final(zuo_sha2_ctx_t *context, zuo_uint8_t digest[ZUO_SHA256_DIGEST_SIZE]) {
-  (void)mbedtls_sha256_finish_ret(context, digest);
+  if (mbedtls_sha256_finish_ret(context, digest) != 0) {
+    /* there's no way to get a non-0 result, but a compiler might worry,
+       so appease it with code to initialize `digest` */
+    int i;
+    for (i = 0; i < ZUO_SHA256_DIGEST_SIZE; i++)
+      digest[i] = 0;
+  }
 }
 
 /* ************************************************************ */
@@ -6897,6 +6918,8 @@ static zuo_t *zuo_string_sha256(zuo_t *str) {
 /*======================================================================*/
 /* executable self path                                                 */
 /*======================================================================*/
+
+#ifndef ZUO_EMBEDDED
 
 #if defined(__linux__)
 
@@ -7079,6 +7102,7 @@ static zuo_t *zuo_self_path(const char *exec_file) {
   free(s);
   return str;
 }
+#endif
 
 /*======================================================================*/
 /* initialization                                                       */
