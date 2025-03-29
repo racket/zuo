@@ -1,0 +1,78 @@
+# This workflow uses Zig and its excellent cross-compilation support to test
+# compiling for multiple platforms. No tests are actually run since it would
+# require emulation.
+name: Zig cross-compile
+
+on: [ push, pull_request ]
+
+jobs:
+  build:
+    name: ${{ matrix.ttriple }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        zig_version: [ "0.14.0" ]
+        ttriple: [
+          aarch64-linux-gnu,
+          aarch64-linux-musl,
+          #aarch64-macos-none,
+          aarch64-windows-gnu,
+          aarch64_be-linux-gnu,
+          aarch64_be-linux-musl,
+          arm-linux-gnueabi,
+          arm-linux-gnueabihf,
+          arm-linux-musleabi,
+          arm-linux-musleabihf,
+          armeb-linux-gnueabi,
+          armeb-linux-gnueabihf,
+          armeb-linux-musleabi,
+          armeb-linux-musleabihf,
+          loongarch64-linux-gnu,
+          loongarch64-linux-musl,
+          mips-linux-gnueabi,
+          mips-linux-gnueabihf,
+          mips-linux-musleabi,
+          mips64-linux-gnuabi64,
+          mips64-linux-gnuabin32,
+          mips64-linux-muslabi64,
+          mips64el-linux-gnuabi64,
+          mips64el-linux-gnuabin32,
+          mips64el-linux-muslabi64,
+          mipsel-linux-gnueabi,
+          mipsel-linux-gnueabihf,
+          mipsel-linux-musleabi,
+          powerpc-linux-gnueabi,
+          powerpc-linux-gnueabihf,
+          #powerpc-linux-musl,
+          #powerpc64-linux-gnu, # FIXME: as of zig 0.14, not implemented correctly.
+          powerpc64-linux-musl,
+          powerpc64le-linux-gnu,
+          powerpc64le-linux-musl,
+          riscv32-linux-gnu,
+          riscv32-linux-musl,
+          riscv64-linux-musl,
+          #sparc64-linux-gnu,
+          thumb-linux-musleabi,
+          thumb-linux-musleabihf,
+          #wasm32-wasi-musl, # wasm lacks signal support.
+          x86-linux-gnu,
+          x86-linux-musl,
+          x86-windows-gnu,
+          x86_64-linux-gnu.2.27, # with a glibc version
+          x86_64-linux-gnux32,
+          x86_64-linux-musl,
+          #x86_64-macos-none,
+          x86_64-windows-gnu,
+        ]
+
+    steps:
+    - uses: actions/checkout@v4
+    - uses: korandoru/setup-zig@v1
+      with:
+        zig-version: ${{ matrix.zig_version }}
+    - name: Build
+      run: >
+        zig build -Dtarget=${{ matrix.ttriple }}
+        -Denable_werror

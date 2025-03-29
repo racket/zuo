@@ -1,0 +1,29 @@
+# This workflow is for zig-based build/test running on Linux, MacOS, Windows.
+name: Zig build
+
+on: [ push, pull_request ]
+
+jobs:
+  build:
+    name: ${{ matrix.os }} ${{ matrix.ttriple }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        zig_version: [ "0.14.0" ]
+        os: [ macos-latest, ubuntu-latest, windows-latest ]
+        ttriple: [ native ]
+
+    steps:
+    - uses: actions/checkout@v4
+    - uses: korandoru/setup-zig@v1
+      with:
+        zig-version: ${{ matrix.zig_version }}
+    - name: Build
+      run: >
+        zig build -Dtarget=${{ matrix.ttriple }}
+        -Denable_werror
+        test
