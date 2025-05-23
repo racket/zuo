@@ -1,0 +1,7 @@
+#lang zuo
+
+;; A simple program that leaks space for CEK,
+;; runs in constant space for SFS
+
+(let loop ([x #f])
+  (loop (lambda (y) y)))

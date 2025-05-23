@@ -1,0 +1,16 @@
+#lang zuo
+
+;; A program that uses O(N^2) space in CEK, O(N) for SFS.
+;; Beware that it always takes O(N^2) time to run!
+
+(define n 1000)
+
+(define start (current-memory-use))
+
+(let loop ([l '()] [i 0])
+  (if (= i n)
+      (begin
+        (alert (- (current-memory-use) start))
+        l)
+      (let ([new-l (append l '(0))])
+        (cdr (loop new-l (+ i 1))))))

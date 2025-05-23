@@ -1,0 +1,33 @@
+#lang zuo
+
+;; A program that uses O(N^2) space for SFS, but O(N) space with
+;; linked-environment CEK or GC-SFS.
+
+(define-syntax (make stx)
+  (let ([vars (let loop ([n 100]) ;; <- N
+                (if (= n 0)
+                    '()
+                    (cons (string->symbol (~a "x" n))
+                          (loop (- n 1)))))])
+    `(apply
+      (lambda ,vars
+        (list ,@(let loop ([vars vars])
+                  (if (null? vars)
+                      '()
+                      (cons `(lambda () (list ,@vars))
+                            (loop (cdr vars)))))))
+      (quote ,vars))))
+
+(define (f) (make))
+
+(define start (current-memory-use))
+
+(define procs
+  (let loop ([i 1000])
+    (if (= i 0)
+        '()
+        (cons (f) (loop (- i 1))))))
+
+(alert (- (current-memory-use) start))
+
+     
