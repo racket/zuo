@@ -36,7 +36,7 @@
 # include <fcntl.h>
 #endif
 
-#if 1
+#if 0
 # include <assert.h>
 # define ZUO_ASSERT(x) assert(x)
 #else
@@ -603,7 +603,7 @@ static void zuo_update_masked_with(zuo_t **addr_to_update,
     zuo_t *env, *old_sub;
     zuo_binary_tree_node_t *mask_node = (zuo_binary_tree_node_t *)mask, *env_node;
     if (old_env->tag == zuo_forwarded_tag) {
-      /* something previously keep the subtree node; continue
+      /* something previously kept the subtree node; continue
          to keep it, and potentially go left and right */
       env = ((zuo_forwarded_t *)old_env)->forward;
     } else {
@@ -1505,7 +1505,9 @@ static zuo_t *zuo_trie_keys(zuo_t *trie_in, zuo_t *accum) {
 /* binary trees                                                         */
 /*======================================================================*/
 
-/* A subtree in a binary tree can be `undefined`, which is a shorthand
+/* A tree of size 1 is represented by the value in the tree (which
+   is never a binary tree), and a tree of size 0 is `z.o_undefined`.
+   A subtree in a binary tree can be `undefined`, which is a shorthand
    for filling out the tree and `undefined` in all leaves. A
    well-formed tree will always used `undefined` for a subtree when it
    can. */
@@ -1530,51 +1532,38 @@ static zuo_t *binary_tree_ref(zuo_t *tree_in, zuo_int_t i) {
   }
 }
 
+/* Acts as "remove" when `v` is `z.o_undefined` */
 static zuo_t *binary_tree_set(zuo_t *tree_in, zuo_int_t i, zuo_t *v) {
-  while (1) {
-    if (tree_in->tag != zuo_binary_tree_node_tag) {
-      if (i == 0)
-        return v;
-      else if (v == z.o_undefined)
-        return tree_in;
-      else {
-        /* reify layer to try again, and the right `undefined` will get filled in */
-        tree_in = zuo_binary_tree_node(0,
-                                       tree_in,
-                                       z.o_undefined);
-      }
-    } else {
-      zuo_binary_tree_node_t *tree = (zuo_binary_tree_node_t *)tree_in;
-      zuo_int_t size = 1 << (tree->depth + 1);
-      if (i < size) {
-        zuo_t *left = tree->left;
-        zuo_t *right = tree->right;
-        if (tree->depth == 0) {
-          if (i == 0)
-            left = v;
-          else
-            right = v;
-        } else {
-          zuo_int_t bit = 1 << tree->depth;
-          if (i < bit)
-            left = binary_tree_set(left, i, v);
-          else
-            right = binary_tree_set(right, i - bit, v);
-        }
-        if (right == z.o_undefined)
-          return left;
-        return zuo_binary_tree_node(tree->depth, left, right);
-      }
-      if (v == z.o_undefined)
-        return tree_in;
-      /* try again with a deeper tree, and we'll fill in the right
-         `undefined` */
-      tree_in = zuo_binary_tree_node(tree->depth + 1,
-                                     ((tree->left == z.o_undefined) && (tree->right == z.o_undefined)
-                                      ? z.o_undefined
-                                      : (zuo_t *)tree),
-                                     z.o_undefined);
+  if (tree_in->tag != zuo_binary_tree_node_tag) {
+    if (i == 0)
+      return v;
+  } else {
+    zuo_binary_tree_node_t *tree = (zuo_binary_tree_node_t *)tree_in;
+    if (i < 1 << (tree->depth + 1)) {
+      zuo_t *left = tree->left;
+      zuo_t *right = tree->right;
+      zuo_int_t bit = 1 << tree->depth;
+
+      if (i < bit)
+        left = binary_tree_set(left, i, v);
+      else
+        right = binary_tree_set(right, i - bit, v);
+
+      if (right == z.o_undefined)
+        return left;
+
+      return zuo_binary_tree_node(tree->depth, left, right);
     }
+  }
+  
+  if (v == z.o_undefined)
+    return tree_in;
+  else {
+    zuo_int_t depth = 0;
+    while (i >= (1 << (depth + 1))) depth++;
+    return zuo_binary_tree_node(depth,
+                                tree_in,
+                                binary_tree_set(z.o_undefined, i - (1 << depth), v));
   }
 }
 
