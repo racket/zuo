@@ -243,7 +243,9 @@ typedef struct zuo_trie_node_t {
 typedef struct zuo_binary_tree_node_t {
   zuo_t obj;
   zuo_int_t depth;
-  zuo_t *left; /* forwarding must modify before `left`, only */
+  zuo_int_t id; /* in live-variable sets: identity */
+  zuo_t *done;  /* in env during GC: tree of already-traversed live-variable identities */
+  zuo_t *left;  /* forwarding must modify before `left`, only */
   zuo_t *right;
 } zuo_binary_tree_node_t;
 
@@ -505,6 +507,39 @@ static zuo_t *zuo_new(int tag, zuo_int_t size) {
   return obj;
 }
 
+#define ADMIN_HEAP_SIZE (4 * 1024 * 1024)
+static int alloc_as_admin = 0;
+static zuo_int_t admin_heap_size;
+static void *admin_space = NULL;
+static zuo_int_t admin_allocation_offset = 0;
+static old_space_t *admin_old_spaces;
+
+static zuo_t *zuo_new_admin(int tag, zuo_int_t size) {
+  zuo_t *obj;
+
+  size = ALLOC_ALIGN(size);
+
+  if (admin_allocation_offset + size > admin_heap_size) {
+    old_space_t *new_old_spaces;
+    new_old_spaces = malloc(sizeof(old_space_t));
+    new_old_spaces->space = admin_space;
+    new_old_spaces->size = admin_heap_size;
+    new_old_spaces->next = admin_old_spaces;
+    admin_old_spaces = new_old_spaces;
+
+    admin_heap_size *= 2;
+    admin_space = malloc_or_recycle(admin_heap_size, &admin_heap_size);
+    admin_allocation_offset = 0;
+  }
+
+  obj = (zuo_t *)((char *)admin_space + admin_allocation_offset);
+  obj->tag = tag;
+
+  admin_allocation_offset += size;
+
+  return obj;
+}
+
 static zuo_int_t object_size(zuo_int32_t tag, zuo_int_t maybe_string_len) {
   switch(tag) {
   case zuo_singleton_tag:
@@ -562,11 +597,24 @@ static void zuo_update(zuo_t **addr_to_update) {
       /* eager ok, because this must be a mask, and binary tree depth is limited */
       zuo_update(&((zuo_binary_tree_node_t *)new_obj)->left);
       zuo_update(&((zuo_binary_tree_node_t *)new_obj)->right);
+      ((zuo_binary_tree_node_t *)new_obj)->done = z.o_undefined;
     }
 #endif
   }
 
   *addr_to_update = ((zuo_forwarded_t *)obj)->forward;
+}
+
+static zuo_t *binary_tree_ref(zuo_t *tree_in, zuo_int_t i);
+static zuo_t *binary_tree_set(zuo_t *tree_in, zuo_int_t i, zuo_t *v);
+
+static int check_and_record_done(zuo_binary_tree_node_t *env_node, zuo_binary_tree_node_t *mask_node) {
+  if (binary_tree_ref(env_node->done, mask_node->id) != z.o_undefined)
+    return 1;
+  alloc_as_admin = 1;
+  env_node->done = binary_tree_set(env_node->done, mask_node->id, z.o_true);
+  alloc_as_admin = 0;
+  return 0;
 }
 
 static void zuo_update_masked_with(zuo_t **addr_to_update,
@@ -621,17 +669,20 @@ static void zuo_update_masked_with(zuo_t **addr_to_update,
       env = zuo_copy(old_env);
       ((zuo_binary_tree_node_t *)env)->left = *addr_to_update;
       ((zuo_binary_tree_node_t *)env)->right = z.o_undefined;
+      ((zuo_binary_tree_node_t *)env)->done = z.o_undefined;
     }
     *addr_to_update = env;
     ZUO_ASSERT(env->tag == zuo_binary_tree_node_tag);
     env_node = (zuo_binary_tree_node_t *)env;
     if (env_node->depth == mask_node->depth) {
-      zuo_update_masked_with(&env_node->left,
-                             ((zuo_binary_tree_node_t *)old_env)->left,
-                             mask_node->left);
-      zuo_update_masked_with(&env_node->right,
-                             ((zuo_binary_tree_node_t *)old_env)->right,
-                             mask_node->right);
+      if (!check_and_record_done(env_node, mask_node)) {
+        zuo_update_masked_with(&env_node->left,
+                               ((zuo_binary_tree_node_t *)old_env)->left,
+                               mask_node->left);
+        zuo_update_masked_with(&env_node->right,
+                               ((zuo_binary_tree_node_t *)old_env)->right,
+                               mask_node->right);
+      }
     } else {
       ZUO_ASSERT(env_node->depth > mask_node->depth);
       zuo_update_masked_with(&((zuo_binary_tree_node_t *)env)->left,
@@ -733,8 +784,19 @@ static void zuo_finish_gc(void *old_space, zuo_int_t old_heap_size, old_space_t 
   sp->next = old_old_spaces;
   free_spaces = sp;
 
+  free(admin_space);
+  sp = admin_old_spaces;
+  while (sp != NULL) {
+    old_space_t *next_free_spaces = sp->next;
+    admin_allocation_offset += 2 * sp->size;
+    free(sp->space);
+    free(sp);
+    sp = next_free_spaces;
+  }
+  cumulative_allocation += admin_allocation_offset;
+
   total_allocation = allocation_offset;
-  gc_threshold = total_allocation * 2;
+  gc_threshold = (total_allocation + admin_allocation_offset) * 2;
   if (gc_threshold < ZUO_MIN_HEAP_SIZE)
     gc_threshold = ZUO_MIN_HEAP_SIZE;
 }
@@ -746,6 +808,11 @@ static void zuo_collect(void) {
   zuo_int_t start_allocation;
 
   zuo_suspend_signal();
+
+  admin_old_spaces = NULL;
+  admin_heap_size = ADMIN_HEAP_SIZE;
+  admin_space = malloc_or_recycle(admin_heap_size, &admin_heap_size);
+  admin_allocation_offset = 0;
 
   start_allocation = total_allocation;
   if (total_allocation > peak_allocation)
@@ -1008,6 +1075,7 @@ static void zuo_fasl(zuo_t *obj, zuo_fasl_stream_t *stream) {
     break;
   case zuo_binary_tree_node_tag:
     zuo_fasl_int(&((zuo_binary_tree_node_t *)obj)->depth, stream);
+    zuo_fasl_int(&((zuo_binary_tree_node_t *)obj)->id, stream);
     zuo_fasl_ref(&((zuo_binary_tree_node_t *)obj)->left, stream);
     zuo_fasl_ref(&((zuo_binary_tree_node_t *)obj)->right, stream);
     break;
@@ -1226,11 +1294,19 @@ static zuo_t *zuo_trie_node(void) {
 }
 
 static zuo_t *zuo_binary_tree_node(zuo_int_t depth, zuo_t *left, zuo_t *right) {
-  zuo_binary_tree_node_t *obj = (zuo_binary_tree_node_t *)zuo_new(zuo_binary_tree_node_tag, sizeof(zuo_binary_tree_node_t));
+  zuo_binary_tree_node_t *obj;
+
+  if (alloc_as_admin)
+    obj = (zuo_binary_tree_node_t *)zuo_new_admin(zuo_binary_tree_node_tag, sizeof(zuo_binary_tree_node_t));
+  else
+    obj = (zuo_binary_tree_node_t *)zuo_new(zuo_binary_tree_node_tag, sizeof(zuo_binary_tree_node_t));
 
   obj->depth = depth;
   obj->left = left;
   obj->right = right;
+
+  obj->id = 0;
+  obj->done = NULL;
 
   return (zuo_t *)obj;
 }
@@ -3456,11 +3532,26 @@ static zuo_t *compile_strip_live(zuo_t *e) {
   return _zuo_cdr(e);
 }
 
-static zuo_t *compile_accum_live(zuo_t *e, zuo_t **_live) {
+static void compile_set_live_identity(zuo_t *live, zuo_int_t *_id) {
+  if (live->tag == zuo_binary_tree_node_tag) {
+    zuo_binary_tree_node_t *live_node = (zuo_binary_tree_node_t *)live;
+    if (live_node->id == 0) {
+      live_node->id = *_id;
+      *_id = *_id + 1;
+      compile_set_live_identity(live_node->left, _id);
+      compile_set_live_identity(live_node->right, _id);
+    }
+  }
+}
+
+static zuo_t *compile_accum_live(zuo_t *e, zuo_t **_live, zuo_int_t *_live_id) {
   /* reverses, and also inserts accumulated live masks between elements */
   zuo_t *re = z.o_null, *live = *_live;
   while (e != z.o_null) {
-    if (re != z.o_null) re = zuo_cons(live, re);
+    if (re != z.o_null) {
+      compile_set_live_identity(live, _live_id);
+      re = zuo_cons(live, re);
+    }
     live = binary_tree_union(compile_get_live(_zuo_car(e)), live);
     re = zuo_cons(compile_strip_live(_zuo_car(e)), re);
     e = _zuo_cdr(e);
@@ -3473,6 +3564,7 @@ static zuo_t *compile(zuo_t *e, zuo_t *top_env) {
   zuo_t *cenv = zuo_cons(z.o_empty_hash, zuo_integer(0));
   zuo_t *es = zuo_cons(zuo_cons(e, cenv), z.o_null);
   zuo_t *rs = z.o_null;
+  zuo_int_t live_id = 1;
 
   while (es != z.o_null) {
     e = _zuo_car(es);
@@ -3602,7 +3694,9 @@ static zuo_t *compile(zuo_t *e, zuo_t *top_env) {
             zuo_fail1("undefined", e);
           e = compile_add_live(v, z.o_undefined);
         } else {
-          e = compile_add_live(idx, binary_tree_set(z.o_undefined, ZUO_INT_I(idx), z.o_true));
+          zuo_t *live = binary_tree_set(z.o_undefined, ZUO_INT_I(idx), z.o_true);
+          compile_set_live_identity(live, &live_id);
+          e = compile_add_live(idx, live);
           ZUO_ASSERT(binary_tree_ref(compile_get_live(e), ZUO_INT_I(idx)) != z.o_undefined);
         }
         rs = zuo_cons(e, rs);
@@ -3621,6 +3715,7 @@ static zuo_t *compile(zuo_t *e, zuo_t *top_env) {
         rs = _zuo_cdr(rs);
         live = binary_tree_union(compile_get_live(thn),
                                  compile_get_live(els));
+        compile_set_live_identity(live, &live_id);
         e = zuo_cons(z.o_if_symbol,
                      zuo_cons(compile_strip_live(tst),
                               zuo_cons(live,
@@ -3646,6 +3741,7 @@ static zuo_t *compile(zuo_t *e, zuo_t *top_env) {
         for (; formals_count-- > 0; ) {
           live = binary_tree_set(live, ZUO_INT_I(idx) + formals_count, z.o_undefined);
         }
+        compile_set_live_identity(live, &live_id);
         e = zuo_cons(live, zuo_cons(compile_strip_live(body), z.o_null));
         if (name_string != z.o_undefined)
           e = zuo_cons(name_string, e);
@@ -3663,6 +3759,7 @@ static zuo_t *compile(zuo_t *e, zuo_t *top_env) {
         rs = _zuo_cdr(rs);
         live = binary_tree_set(compile_get_live(body), ZUO_INT_I(idx), z.o_undefined);
         ZUO_ASSERT(binary_tree_ref(live, ZUO_INT_I(idx)) == z.o_undefined);
+        compile_set_live_identity(live, &live_id);
         e = zuo_cons(z.o_let_symbol,
                      zuo_cons(compile_strip_live(rhs),
                               zuo_cons(live,
@@ -3679,7 +3776,7 @@ static zuo_t *compile(zuo_t *e, zuo_t *top_env) {
           rs = _zuo_cdr(rs);          
         }
         rs = _zuo_cdr(rs);
-        e = compile_accum_live(e, &live);
+        e = compile_accum_live(e, &live, &live_id);
         e = zuo_cons(z.o_begin_symbol, e);
         e = compile_add_live(e, live);
       } else if (e == z.o_null) {
@@ -3691,7 +3788,7 @@ static zuo_t *compile(zuo_t *e, zuo_t *top_env) {
           rs = _zuo_cdr(rs);
         }
         rs = _zuo_cdr(rs);
-        e = compile_accum_live(e, &live);
+        e = compile_accum_live(e, &live, &live_id);
         e = compile_add_live(e, live);
       }
       rs = zuo_cons(e, rs);
@@ -6058,7 +6155,7 @@ static zuo_t *zuo_current_memory_use(zuo_t *mode) {
     Z.o_interp_v = z.o_undefined;
     Z.o_interp_env = z.o_undefined;
     zuo_collect();
-    return zuo_integer(total_allocation);
+    return zuo_integer(total_allocation + admin_allocation_offset);
   } else if ((mode->tag == zuo_symbol_tag)
            && (mode == zuo_symbol("cumulative")))
     return zuo_integer(cumulative_allocation + total_allocation);

@@ -1,0 +1,32 @@
+#lang zuo
+
+;; A program that uses O(N^2) space for SFS, but O(N) space
+;; linked-environment and GC-SFS. Program size is O(N).
+
+(define-syntax (make stx)
+  (define N 100) ;; <- N
+  (let ([vars (let loop ([n N])
+                (if (= n 0)
+                    '()
+                    (cons (string->symbol (~a "x" n))
+                          (loop (- n 1)))))])
+    `(apply
+      (lambda ,vars
+        (let loop ([i ,N])
+          (if (= i 0)
+              '()
+              (cons (lambda () ,vars)
+                    (loop (- i 1))))))
+      (quote ,vars))))
+
+(define (f) (make))
+
+(define start (current-memory-use))
+
+(define procs
+  (let loop ([i 100])
+    (if (= i 0)
+        '()
+        (cons (f) (loop (- i 1))))))
+
+(alert (- (current-memory-use) start))

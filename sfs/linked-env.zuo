@@ -1,7 +1,9 @@
 #lang zuo
 
-;; A program that uses O(N^2) space for SFS, but O(N) space with
-;; linked-environment CEK or GC-SFS.
+;; A program that uses O(N^2) space for SFS, but O(N) space
+;; linked-environment, and O(N^2) for GC-SFS because the
+;; program is O(N^2) size. Note that the linked-environment
+;; space is also O(N^2) if program size is taken into account.
 
 (define-syntax (make stx)
   (let ([vars (let loop ([n 100]) ;; <- N
@@ -28,6 +30,5 @@
         '()
         (cons (f) (loop (- i 1))))))
 
-(alert (- (current-memory-use) start))
-
-     
+(alert (- (current-memory-use) start)) ; omits program size
+(alert (current-memory-use))           ; includes program size
