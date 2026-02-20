@@ -609,6 +609,7 @@ static zuo_t *binary_tree_ref(zuo_t *tree_in, zuo_int_t i);
 static zuo_t *binary_tree_set(zuo_t *tree_in, zuo_int_t i, zuo_t *v);
 
 static int check_and_record_done(zuo_binary_tree_node_t *env_node, zuo_binary_tree_node_t *mask_node) {
+  ZUO_ASSERT(env_node->done != z.o_true);
   if (binary_tree_ref(env_node->done, mask_node->id) != z.o_undefined)
     return 1;
   alloc_as_admin = 1;
@@ -617,15 +618,37 @@ static int check_and_record_done(zuo_binary_tree_node_t *env_node, zuo_binary_tr
   return 0;
 }
 
-static void zuo_update_masked_with(zuo_t **addr_to_update,
-                                   zuo_t *old_env,
-                                   zuo_t *mask) {
+static int tree_node_is_done(zuo_binary_tree_node_t *env_node) {
+  return env_node->done == z.o_true;
+}
+
+static void tree_node_done(zuo_binary_tree_node_t *env_node) {
+  env_node->done = z.o_true;
+}
+
+static int old_subtree_is_done(zuo_t **addr_to_update, zuo_t *old_env) {
+  if (old_env->tag == zuo_forwarded_tag) {
+    zuo_t *env = ((zuo_forwarded_t *)old_env)->forward;
+    *addr_to_update = env;
+    if (env->tag == zuo_binary_tree_node_tag)
+      return tree_node_is_done((zuo_binary_tree_node_t *)env);
+    return 1;
+  } else
+    return 0;
+}
+
+/* result says whether the whole enviornment is (now) done */
+static int zuo_update_masked_with(zuo_t **addr_to_update,
+                                  zuo_t *old_env,
+                                  zuo_t *mask) {
 #if !GC_SFS
   *addr_to_update = old_env;
   zuo_update(addr_to_update);
+  return 1;
 #else
   if (mask == z.o_undefined) {
-    /* not keeping subtree, or keeping as-is */    
+    /* not keeping subtree, or keeping as-is */
+    return old_subtree_is_done(addr_to_update, old_env);
   } else if (mask->tag != zuo_binary_tree_node_tag) {
     /* keeping only index 0 */
     if (old_env->tag == zuo_forwarded_tag) {
@@ -633,19 +656,33 @@ static void zuo_update_masked_with(zuo_t **addr_to_update,
          to keep it, and go left if it's a node */
       zuo_t *env = ((zuo_forwarded_t *)old_env)->forward;
       *addr_to_update = env;
-      if (env->tag == zuo_binary_tree_node_tag) {        
-        zuo_update_masked_with(&((zuo_binary_tree_node_t *)env)->left,
-                               ((zuo_binary_tree_node_t *)old_env)->left,
-                               mask);
-      }
+      if (env->tag == zuo_binary_tree_node_tag) {
+        int done;
+        zuo_binary_tree_node_t *env_node = (zuo_binary_tree_node_t *)env;
+        zuo_binary_tree_node_t *old_env_node = (zuo_binary_tree_node_t *)old_env;
+        if (tree_node_is_done(env_node))
+          return 1;
+        done = zuo_update_masked_with(&env_node->left,
+                                      old_env_node->left,
+                                      mask);
+        if (done && old_subtree_is_done(&env_node->right,
+                                        old_env_node->right)) {
+          tree_node_done(env_node);
+          return 1;
+        } else
+          return 0;
+      } else
+        return 1;
     } else if (old_env->tag == zuo_binary_tree_node_tag) {
       /* nothing kept at this subtree level, so far; keep only leftmost */
-      zuo_update_masked_with(addr_to_update,
-                             ((zuo_binary_tree_node_t *)old_env)->left,
-                             mask);
+      (void)zuo_update_masked_with(addr_to_update,
+                                   ((zuo_binary_tree_node_t *)old_env)->left,
+                                   mask);
+      return 0;
     } else {
       *addr_to_update = old_env;
       zuo_update(addr_to_update);
+      return 1;
     }
   } else {
     zuo_t *env, *old_sub;
@@ -660,10 +697,11 @@ static void zuo_update_masked_with(zuo_t **addr_to_update,
       old_env_node = (zuo_binary_tree_node_t *)old_env;
       if (old_env_node->depth > mask_node->depth) {
         /* can drop this node and continue to left */
-        zuo_update_masked_with(addr_to_update,
-                               ((zuo_binary_tree_node_t *)old_env)->left,
-                               mask);
-        return;
+        int done;
+        done = zuo_update_masked_with(addr_to_update,
+                                      old_env_node->left,
+                                      mask);
+        return done && (old_env_node->right == z.o_undefined);
       }
       ZUO_ASSERT(old_env_node->depth == mask_node->depth);
       env = zuo_copy(old_env);
@@ -674,20 +712,37 @@ static void zuo_update_masked_with(zuo_t **addr_to_update,
     *addr_to_update = env;
     ZUO_ASSERT(env->tag == zuo_binary_tree_node_tag);
     env_node = (zuo_binary_tree_node_t *)env;
+    if (tree_node_is_done(env_node))
+      return 1;
     if (env_node->depth == mask_node->depth) {
       if (!check_and_record_done(env_node, mask_node)) {
-        zuo_update_masked_with(&env_node->left,
-                               ((zuo_binary_tree_node_t *)old_env)->left,
-                               mask_node->left);
-        zuo_update_masked_with(&env_node->right,
-                               ((zuo_binary_tree_node_t *)old_env)->right,
-                               mask_node->right);
-      }
+        int done_left, done_right;
+        done_left = zuo_update_masked_with(&env_node->left,
+                                           ((zuo_binary_tree_node_t *)old_env)->left,
+                                           mask_node->left);
+        done_right = zuo_update_masked_with(&env_node->right,
+                                            ((zuo_binary_tree_node_t *)old_env)->right,
+                                            mask_node->right);
+        if (done_left && done_right) {
+          tree_node_done(env_node);
+          return 1;
+        } else
+          return 0;
+      } else
+        return 0;
     } else {
+      int done;
+      zuo_binary_tree_node_t *old_env_node = (zuo_binary_tree_node_t *)old_env;
       ZUO_ASSERT(env_node->depth > mask_node->depth);
-      zuo_update_masked_with(&((zuo_binary_tree_node_t *)env)->left,
-                             ((zuo_binary_tree_node_t *)old_env)->left,
-                             mask);
+      done = zuo_update_masked_with(&env_node->left,
+                                    old_env_node->left,
+                                    mask);
+      if (done && old_subtree_is_done(&env_node->right,
+                                      old_env_node->right)) {
+        tree_node_done(env_node);
+        return 1;
+      } else
+        return 0;
     }
   }
 #endif
@@ -696,7 +751,7 @@ static void zuo_update_masked_with(zuo_t **addr_to_update,
 static void zuo_update_masked(zuo_t **addr_to_update, zuo_t *mask) {
   zuo_t *old_env = *addr_to_update;
   *addr_to_update = z.o_undefined;
-  zuo_update_masked_with(addr_to_update, old_env, mask);
+  (void)zuo_update_masked_with(addr_to_update, old_env, mask);
 }
 
 static void zuo_trace(zuo_t *obj) {
