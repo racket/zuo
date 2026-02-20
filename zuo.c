@@ -1495,6 +1495,11 @@ static zuo_t *zuo_trie_extend(zuo_t *trie, zuo_t *sym, zuo_t *val) {
   return trie_extend(trie, ((zuo_symbol_t *)sym)->id, sym, val, &added);
 }
 
+static zuo_t *zuo_trie_extend_at(zuo_t *trie, zuo_int_t id, zuo_t *key, zuo_t *val) {
+  int added = 0;
+  return trie_extend(trie, id, key, val, &added);
+}
+
 static zuo_t *trie_remove(zuo_t *trie, zuo_int_t id, int depth) {
   zuo_trie_node_t *new_trie;
 
@@ -3532,24 +3537,66 @@ static zuo_t *compile_strip_live(zuo_t *e) {
   return _zuo_cdr(e);
 }
 
-static void compile_set_live_identity(zuo_t *live, zuo_int_t *_id) {
+typedef struct zuo_live_state_t {
+  zuo_int_t id;
+  zuo_t *intern_trie;
+} zuo_live_state_t;
+
+static zuo_t *compile_set_live_identity(zuo_t *live, zuo_live_state_t *lives) {
+  /* intern `live` via `lives`, setting `id` if fresh */
   if (live->tag == zuo_binary_tree_node_tag) {
     zuo_binary_tree_node_t *live_node = (zuo_binary_tree_node_t *)live;
     if (live_node->id == 0) {
-      live_node->id = *_id;
-      *_id = *_id + 1;
-      compile_set_live_identity(live_node->left, _id);
-      compile_set_live_identity(live_node->right, _id);
+      zuo_int_t left_id, right_id;
+      zuo_t *lefts, *rights, *live_already;
+
+      live_node->left = compile_set_live_identity(live_node->left, lives);
+      live_node->right = compile_set_live_identity(live_node->right, lives);
+
+      if (live_node->left->tag == zuo_binary_tree_node_tag)
+        left_id = ((zuo_binary_tree_node_t *)live_node->left)->id;
+      else if (live_node->left == z.o_undefined)
+        left_id = 1;
+      else if (live_node->left == z.o_true)
+        left_id = 2;
+      else
+        zuo_panic("unknown live-tree left");
+
+      if (live_node->right->tag == zuo_binary_tree_node_tag)
+        right_id = ((zuo_binary_tree_node_t *)live_node->right)->id;
+      else if (live_node->right == z.o_undefined)
+        right_id = 1;
+      else if (live_node->right == z.o_true)
+        right_id = 2;
+      else
+        zuo_panic("unknown live-tree right");
+
+      lefts = trie_lookup(lives->intern_trie, live_node->depth);
+      if (lefts == z.o_undefined) lefts = z.o_empty_hash;
+      rights = trie_lookup(lefts, left_id);
+      if (rights == z.o_undefined) rights = z.o_empty_hash;
+      live_already = trie_lookup(rights, right_id);
+      if (live_already == z.o_undefined) {
+        live_node->id = lives->id;
+        lives->id = lives->id + 1;
+
+        rights = zuo_trie_extend_at(rights, right_id, live, live);
+        lefts = zuo_trie_extend_at(lefts, left_id, rights, rights);
+        lives->intern_trie = zuo_trie_extend_at(lives->intern_trie, live_node->depth, lefts, lefts);
+      } else
+        live = live_already;
     }
   }
+
+  return live;
 }
 
-static zuo_t *compile_accum_live(zuo_t *e, zuo_t **_live, zuo_int_t *_live_id) {
+static zuo_t *compile_accum_live(zuo_t *e, zuo_t **_live, zuo_live_state_t *lives) {
   /* reverses, and also inserts accumulated live masks between elements */
   zuo_t *re = z.o_null, *live = *_live;
   while (e != z.o_null) {
     if (re != z.o_null) {
-      compile_set_live_identity(live, _live_id);
+      live = compile_set_live_identity(live, lives);
       re = zuo_cons(live, re);
     }
     live = binary_tree_union(compile_get_live(_zuo_car(e)), live);
@@ -3564,7 +3611,7 @@ static zuo_t *compile(zuo_t *e, zuo_t *top_env) {
   zuo_t *cenv = zuo_cons(z.o_empty_hash, zuo_integer(0));
   zuo_t *es = zuo_cons(zuo_cons(e, cenv), z.o_null);
   zuo_t *rs = z.o_null;
-  zuo_int_t live_id = 1;
+  zuo_live_state_t lives = { 3, z.o_empty_hash };
 
   while (es != z.o_null) {
     e = _zuo_car(es);
@@ -3695,7 +3742,7 @@ static zuo_t *compile(zuo_t *e, zuo_t *top_env) {
           e = compile_add_live(v, z.o_undefined);
         } else {
           zuo_t *live = binary_tree_set(z.o_undefined, ZUO_INT_I(idx), z.o_true);
-          compile_set_live_identity(live, &live_id);
+          live = compile_set_live_identity(live, &lives);
           e = compile_add_live(idx, live);
           ZUO_ASSERT(binary_tree_ref(compile_get_live(e), ZUO_INT_I(idx)) != z.o_undefined);
         }
@@ -3715,7 +3762,7 @@ static zuo_t *compile(zuo_t *e, zuo_t *top_env) {
         rs = _zuo_cdr(rs);
         live = binary_tree_union(compile_get_live(thn),
                                  compile_get_live(els));
-        compile_set_live_identity(live, &live_id);
+        live = compile_set_live_identity(live, &lives);
         e = zuo_cons(z.o_if_symbol,
                      zuo_cons(compile_strip_live(tst),
                               zuo_cons(live,
@@ -3723,6 +3770,7 @@ static zuo_t *compile(zuo_t *e, zuo_t *top_env) {
                                                 zuo_cons(compile_strip_live(els),
                                                          z.o_null)))));
         live = binary_tree_union(compile_get_live(tst), live);
+        live = compile_set_live_identity(live, &lives);
         e = compile_add_live(e, live);
       } else if (e == z.o_lambda_symbol) {
         zuo_t *body, *name_string, *formals, *idx, *live;
@@ -3741,7 +3789,7 @@ static zuo_t *compile(zuo_t *e, zuo_t *top_env) {
         for (; formals_count-- > 0; ) {
           live = binary_tree_set(live, ZUO_INT_I(idx) + formals_count, z.o_undefined);
         }
-        compile_set_live_identity(live, &live_id);
+        live = compile_set_live_identity(live, &lives);
         e = zuo_cons(live, zuo_cons(compile_strip_live(body), z.o_null));
         if (name_string != z.o_undefined)
           e = zuo_cons(name_string, e);
@@ -3759,7 +3807,7 @@ static zuo_t *compile(zuo_t *e, zuo_t *top_env) {
         rs = _zuo_cdr(rs);
         live = binary_tree_set(compile_get_live(body), ZUO_INT_I(idx), z.o_undefined);
         ZUO_ASSERT(binary_tree_ref(live, ZUO_INT_I(idx)) == z.o_undefined);
-        compile_set_live_identity(live, &live_id);
+        live = compile_set_live_identity(live, &lives);
         e = zuo_cons(z.o_let_symbol,
                      zuo_cons(compile_strip_live(rhs),
                               zuo_cons(live,
@@ -3767,6 +3815,7 @@ static zuo_t *compile(zuo_t *e, zuo_t *top_env) {
                                                 zuo_cons(compile_strip_live(body),
                                                          z.o_null)))));
         live = binary_tree_union(live, compile_get_live(rhs));
+        live = compile_set_live_identity(live, &lives);
         e = compile_add_live(e, live);
       } else if (e == z.o_begin_symbol) {
         zuo_t *live = z.o_undefined;
@@ -3776,8 +3825,9 @@ static zuo_t *compile(zuo_t *e, zuo_t *top_env) {
           rs = _zuo_cdr(rs);          
         }
         rs = _zuo_cdr(rs);
-        e = compile_accum_live(e, &live, &live_id);
+        e = compile_accum_live(e, &live, &lives);
         e = zuo_cons(z.o_begin_symbol, e);
+        live = compile_set_live_identity(live, &lives);
         e = compile_add_live(e, live);
       } else if (e == z.o_null) {
         /* application */
@@ -3788,7 +3838,8 @@ static zuo_t *compile(zuo_t *e, zuo_t *top_env) {
           rs = _zuo_cdr(rs);
         }
         rs = _zuo_cdr(rs);
-        e = compile_accum_live(e, &live, &live_id);
+        e = compile_accum_live(e, &live, &lives);
+        live = compile_set_live_identity(live, &lives);
         e = compile_add_live(e, live);
       }
       rs = zuo_cons(e, rs);
