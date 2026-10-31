@@ -497,6 +497,7 @@
      done-state]
     [(and (build-state-dry-run-mode newer-state)
           (not (hash-ref (target-options t) 'recur? #f)))
+     (when path-handle (cleanable-cancel path-handle))
      (define mode (build-state-dry-run-mode newer-state))
      (when (eq? mode 'dry-run)
        (alert (~a "would build target: " (target-name t))))
