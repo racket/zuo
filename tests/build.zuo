@@ -17,3 +17,20 @@
 
   (check (glob-match? "*dependency cycle*" err) #t)
   (check "" out))
+
+(for-each
+ (lambda (mode)
+   (define path (build-path tmp-dir "dry-run.txt"))
+   (display-to-file "keep" path :truncate)
+   (run-zuo
+    `(begin
+       (require zuo/build)
+       (build (target ,path
+                      (lambda (path token)
+                        (rule '() (lambda () (error "unexpected build")))))
+              #f
+              (hash 'dry-run-mode ',mode)))
+    (lambda (status out err)
+      (check status (if (eq? mode 'question) 1 0))))
+   (check (file->string path) "keep"))
+ '(dry-run question))
